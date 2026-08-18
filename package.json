@@ -1,0 +1,80 @@
+{
+  "name": "actions-sanity",
+  "displayName": "Actions Sanity — GitHub Actions workflow lint: script injection, unpinned actions, token scope",
+  "description": "Lints .github/workflows in the editor. Finds script injection from untrusted ${{ github.event }} inputs, untrusted checkouts under pull_request_target, third-party actions on a moving tag or branch, jobs running on a write-scoped default token, needs: that point at nothing, and caches that never hit. No Go binary, no hosted service, no CI run.",
+  "version": "0.0.1",
+  "publisher": "sujeito-operator",
+  "license": "MIT",
+  "sponsor": {
+    "url": "https://github.com/sujeito-operator/pilot"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/sujeito-operator/actions-sanity.git"
+  },
+  "bugs": {
+    "url": "https://github.com/sujeito-operator/actions-sanity/issues"
+  },
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "categories": [
+    "Linters",
+    "Programming Languages",
+    "Other"
+  ],
+  "keywords": [
+    "github actions",
+    "workflow",
+    "lint",
+    "linter",
+    "ci",
+    "actionlint",
+    "yaml",
+    "security",
+    "devops",
+    "supply chain"
+  ],
+  "main": "./extension.js",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "actionsSanity.scanWorkspace",
+        "title": "Actions Sanity: Scan workflows"
+      }
+    ],
+    "configuration": {
+      "title": "Actions Sanity",
+      "properties": {
+        "actionsSanity.disabledRules": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "yaml",
+              "script-injection",
+              "untrusted-checkout",
+              "unpinned-action",
+              "action-branch-ref",
+              "no-permissions",
+              "needs-unknown-job",
+              "job-continue-on-error",
+              "cache-key-static",
+              "cache-key-per-run",
+              "no-timeout",
+              "schedule-no-dispatch"
+            ]
+          },
+          "default": [
+            "no-timeout"
+          ],
+          "description": "Rules never reported. `no-timeout` is off by default because it is true of almost every workflow ever written — measured against 40 real ones it fired 88 times. Remove it from this list if you care about runner minutes."
+        }
+      }
+    }
+  },
+  "icon": "icon.png"
+}
