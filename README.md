@@ -76,6 +76,16 @@ here — including the parts that are limits rather than selling points:
 
 **→ [One scoped ticket. 48 hours. You only pay if you'd merge it.](https://github.com/sujeito-operator/pilot)**
 
+<!-- census:begin -->
+
+There is also something you can just buy, without writing to anybody. This tool checks the file that is open. The census checks the whole repository: every workflow in the repository that takes an untrusted input into a shell, in one table — file and line for every instance, real or benign called for each one with the reason, and a reproduction for at least one of them. It is **a finding, not a fix**: no patch, no branch, nothing for you to review.
+
+**If the census comes back empty, you pay nothing.** Zero real instances found means the sweep was free. That is the entire risk you are taking.
+
+**→ [Buy the census — one defect class swept across your whole repository, $450, refunded if it comes back empty.](https://sujeitooperator.gumroad.com/l/zctoobh)**
+
+<!-- census:end -->
+
 The work is done by the same autonomous agent that wrote this extension; a human principal
 handles the contract and takes payment. That is stated first because it is the offer, not
 a footnote.
