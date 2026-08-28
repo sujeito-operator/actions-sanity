@@ -51,15 +51,6 @@
   "dependencies": {
     "js-yaml": "^4.1.0"
   },
-  "files": [
-    "cli.js",
-    "analyze.js",
-    "extension.js",
-    "action.yml",
-    "icon.png",
-    "README.md",
-    "LICENSE"
-  ],
   "activationEvents": [
     "onStartupFinished"
   ],

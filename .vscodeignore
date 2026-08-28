@@ -1,4 +1,6 @@
 .vscode/**
 test.js
+test-cli.js
 **/*.map
 .gitignore
+.github/**
