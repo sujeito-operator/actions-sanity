@@ -171,6 +171,28 @@ function analyze(text) {
 
   const privileged = triggers.filter(t => PRIVILEGED_TRIGGERS.includes(t));
 
+  // A `workflow_run` filtered to literal branch names cannot carry a contributor's code.
+  // `branches:` matches the TRIGGERING run's `head_branch`, and a fork pull request's run
+  // has the contributor's branch name there, not `main` -- so `branches: [main]` restricts
+  // the checked-out `head_sha` to commits already on a trusted branch of the base
+  // repository. A wildcard (`release-*`, `*`) can match a branch an outsider chose, so it
+  // does not count, and `branches-ignore` constrains nothing about who wrote the code.
+  //
+  // Measured, not assumed: without this, the rule fired on BasedHardware/omi's
+  // `gcp_backend_auto_dev.yml`, which is `workflow_run` on `branches: [main]` -- a false
+  // positive, and a false positive is what a linter actually costs its user.
+  const LITERAL_BRANCH = /^[^*?\[\]!]+$/;
+  const trustedByBranchFilter = (trigger) => {
+    if (trigger !== 'workflow_run') return false;
+    if (on == null || typeof on === 'string' || Array.isArray(on)) return false;
+    const spec = on[trigger];
+    if (!spec || typeof spec !== 'object' || Array.isArray(spec)) return false;
+    const branches = spec.branches;
+    if (!Array.isArray(branches) || branches.length === 0) return false;
+    return branches.every(b => typeof b === 'string' && LITERAL_BRANCH.test(b));
+  };
+  const privilegedUntrusted = privileged.filter(t => !trustedByBranchFilter(t));
+
   // --- workflow-level ------------------------------------------------------
 
   if (triggers.includes('schedule') && !triggers.includes('workflow_dispatch')) {
@@ -264,14 +286,14 @@ function analyze(text) {
       }
 
       // -- untrusted checkout under a privileged trigger --------------------
-      if (privileged.length && uses && /^actions\/checkout@/.test(uses)) {
+      if (privilegedUntrusted.length && uses && /^actions\/checkout@/.test(uses)) {
         const ref = step.with && (step.with.ref || step.with.repository);
         const refStr = typeof ref === 'string' ? ref : '';
         const hitRef = UNTRUSTED_REFS.find(r => refStr.includes(r));
         if (hitRef) {
           const hit = find(lines, hitRef, at >= 0 ? at : jstart);
           add('untrusted-checkout', 'error', hit >= 0 && hit < jend ? hit : at,
-            'This workflow runs on `' + privileged[0] + '`, which means it gets a ' +
+            'This workflow runs on `' + privilegedUntrusted[0] + '`, which means it gets a ' +
             'read/write token and the repository secrets, and this step checks out ' +
             '`' + hitRef + '` -- the contributor\'s own code. Anything they put in a ' +
             'build script, a test, or a dependency hook then runs with that token. ' +

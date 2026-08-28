@@ -1,0 +1,34 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Analyzer and CLI suites
+        run: npm test
+
+  dogfood:
+    name: lint this repository with itself
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      # The action under test, run on the repository that defines it. If this step ever
+      # fails, the linter is reporting a real problem in its own workflows -- which is the
+      # only honest way to claim it works.
+      - uses: ./
+        with:
+          fail-on: error

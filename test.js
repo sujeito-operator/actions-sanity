@@ -337,5 +337,94 @@ t('findKey matches a whole key and not a prefix of one', () => {
   assert.strictEqual(findKey(l, 'key'), 1);
 });
 
+console.log('\nworkflow_run branch filters (untrusted-checkout precision)');
+t('workflow_run filtered to a literal branch is not an untrusted checkout', () => {
+  // The real fixture this rule was wrong about: BasedHardware/omi.
+  const p = analyze(`name: deploy
+on:
+  workflow_run:
+    workflows: ["Release Eligibility"]
+    branches: [main]
+    types: [completed]
+jobs:
+  d:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: \${{ github.event.workflow_run.head_sha }}
+`);
+  assert.ok(!p.some(x => x.rule === 'untrusted-checkout'),
+    'fired on a workflow_run restricted to main: ' + JSON.stringify(p.filter(x=>x.rule==='untrusted-checkout')));
+});
+t('a wildcard branch filter can match a fork branch, so it still fires', () => {
+  const p = analyze(`name: deploy
+on:
+  workflow_run:
+    workflows: ["x"]
+    branches: ["release-*"]
+    types: [completed]
+jobs:
+  d:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: \${{ github.event.workflow_run.head_sha }}
+`);
+  assert.ok(p.some(x => x.rule === 'untrusted-checkout'), JSON.stringify(p));
+});
+t('an unfiltered workflow_run still fires', () => {
+  const p = analyze(`name: deploy
+on:
+  workflow_run:
+    workflows: ["x"]
+    types: [completed]
+jobs:
+  d:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: \${{ github.event.workflow_run.head_sha }}
+`);
+  assert.ok(p.some(x => x.rule === 'untrusted-checkout'), JSON.stringify(p));
+});
+t('branches-ignore constrains nothing about who wrote the code, so it still fires', () => {
+  const p = analyze(`name: deploy
+on:
+  workflow_run:
+    workflows: ["x"]
+    branches-ignore: [gh-pages]
+    types: [completed]
+jobs:
+  d:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: \${{ github.event.workflow_run.head_sha }}
+`);
+  assert.ok(p.some(x => x.rule === 'untrusted-checkout'), JSON.stringify(p));
+});
+t('pull_request_target is never excused by a workflow_run branch filter', () => {
+  const p = analyze(`name: deploy
+on:
+  pull_request_target:
+  workflow_run:
+    workflows: ["x"]
+    branches: [main]
+    types: [completed]
+jobs:
+  d:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: \${{ github.event.pull_request.head.sha }}
+`);
+  assert.ok(p.some(x => x.rule === 'untrusted-checkout'), JSON.stringify(p));
+});
+
 console.log(failures ? `\n${failures} FAILING` : '\nall passing');
 process.exit(failures ? 1 : 0);

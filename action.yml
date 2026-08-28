@@ -1,0 +1,58 @@
+name: 'Actions Sanity'
+description: 'Lint GitHub Actions workflows for script injection, untrusted checkout under privileged triggers, moving action references and unscoped tokens. No Go toolchain, no hosted service.'
+author: 'sujeito-operator'
+
+branding:
+  icon: 'shield'
+  color: 'blue'
+
+inputs:
+  path:
+    description: 'File or directory to scan. A directory is searched for .github/workflows, and every *.yml and *.yaml directly inside it is linted -- the same set GitHub runs.'
+    required: false
+    default: '.'
+  fail-on:
+    description: 'Fail the step when a finding of this severity or worse survives: error, warning, info, or never.'
+    required: false
+    default: 'error'
+  min-severity:
+    description: 'Only report findings of this severity or worse: error, warning, info.'
+    required: false
+    default: 'info'
+  disable:
+    description: 'Comma-separated rule ids to suppress, e.g. no-permissions,cache-key-static.'
+    required: false
+    default: ''
+  enable:
+    description: 'Comma-separated rule ids that are off by default to turn back on. Today that is only no-timeout.'
+    required: false
+    default: ''
+  json:
+    description: 'Emit JSON instead of human-readable output.'
+    required: false
+    default: 'false'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Run actions-sanity
+      shell: bash
+      # Inputs are passed through the environment and quoted, never interpolated into the
+      # script body. `${{ inputs.x }}` expanded inline is the script-injection hole this
+      # action exists to find: the expansion happens before bash sees the line, so a value
+      # containing a shell metacharacter runs as code with this job's token in scope.
+      # A linter that ships the bug it reports has no standing to report it.
+      env:
+        AS_PATH: ${{ inputs.path }}
+        AS_FAIL_ON: ${{ inputs.fail-on }}
+        AS_MIN_SEVERITY: ${{ inputs.min-severity }}
+        AS_DISABLE: ${{ inputs.disable }}
+        AS_ENABLE: ${{ inputs.enable }}
+        AS_JSON: ${{ inputs.json }}
+      run: |
+        set -euo pipefail
+        args=( --no-color --fail-on "$AS_FAIL_ON" --min-severity "$AS_MIN_SEVERITY" )
+        if [ -n "$AS_DISABLE" ]; then args+=( --disable "$AS_DISABLE" ); fi
+        if [ -n "$AS_ENABLE" ]; then args+=( --enable "$AS_ENABLE" ); fi
+        if [ "$AS_JSON" = "true" ]; then args+=( --json ); fi
+        node "$GITHUB_ACTION_PATH/cli.js" "${args[@]}" "$AS_PATH"

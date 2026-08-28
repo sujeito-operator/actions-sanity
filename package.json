@@ -1,8 +1,8 @@
 {
   "name": "actions-sanity",
-  "displayName": "Actions Sanity — GitHub Actions workflow lint: script injection, unpinned actions, token scope",
+  "displayName": "Actions Sanity \u2014 GitHub Actions workflow lint: script injection, unpinned actions, token scope",
   "description": "Lints .github/workflows in the editor. Finds script injection from untrusted ${{ github.event }} inputs, untrusted checkouts under pull_request_target, third-party actions on a moving tag or branch, jobs running on a write-scoped default token, needs: that point at nothing, and caches that never hit. No Go binary, no hosted service, no CI run.",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "publisher": "sujeito-operator",
   "license": "MIT",
   "sponsor": {
@@ -16,7 +16,8 @@
     "url": "https://github.com/sujeito-operator/actions-sanity/issues"
   },
   "engines": {
-    "vscode": "^1.75.0"
+    "vscode": "^1.75.0",
+    "node": ">=18"
   },
   "categories": [
     "Linters",
@@ -33,9 +34,32 @@
     "yaml",
     "security",
     "devops",
-    "supply chain"
+    "supply chain",
+    "cli",
+    "workflow-lint",
+    "script-injection",
+    "supply-chain",
+    "github-action"
   ],
   "main": "./extension.js",
+  "bin": {
+    "actions-sanity": "./cli.js"
+  },
+  "scripts": {
+    "test": "node test.js && node test-cli.js"
+  },
+  "dependencies": {
+    "js-yaml": "^4.1.0"
+  },
+  "files": [
+    "cli.js",
+    "analyze.js",
+    "extension.js",
+    "action.yml",
+    "icon.png",
+    "README.md",
+    "LICENSE"
+  ],
   "activationEvents": [
     "onStartupFinished"
   ],
@@ -71,7 +95,7 @@
           "default": [
             "no-timeout"
           ],
-          "description": "Rules never reported. `no-timeout` is off by default because it is true of almost every workflow ever written — measured against 40 real ones it fired 88 times. Remove it from this list if you care about runner minutes."
+          "description": "Rules never reported. `no-timeout` is off by default because it is true of almost every workflow ever written \u2014 measured against 40 real ones it fired 88 times. Remove it from this list if you care about runner minutes."
         }
       }
     }
