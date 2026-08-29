@@ -1,0 +1,26 @@
+# An EXAMPLE workflow, deliberately wrong, used to produce the picture in the README.
+# Every finding shown there is this file analysed by the real rules: `npx actions-sanity demo`.
+name: Release
+on:
+  issues:
+    types: [opened]
+  pull_request_target:
+
+jobs:
+  triage:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          echo "New issue: ${{ github.event.issue.title }}"
+      - uses: actions/checkout@main
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+      - uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: npm-cache
+  publish:
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - run: npm publish
