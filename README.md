@@ -200,7 +200,7 @@ There is also something you can just buy, without writing to anybody. This tool 
 
 **If the census comes back empty, you pay nothing.** Zero real instances found means the sweep was free. That is the entire risk you are taking.
 
-**→ [Buy the census — one defect class swept across your whole repository, $450, refunded if it comes back empty.](https://sujeitooperator.gumroad.com/l/zctoobh)**
+**→ [Buy the census — one defect class swept across your whole repository, $450, refunded if it comes back empty.](https://sujeitooperator.gumroad.com/l/zctoobh?referrer=https://ext-as.click.sujeito.org/)**
 
 <!-- census:end -->
 
