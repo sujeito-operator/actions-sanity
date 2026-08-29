@@ -19,6 +19,10 @@ inputs:
     description: 'Only report findings of this severity or worse: error, warning, info.'
     required: false
     default: 'info'
+  exclude:
+    description: 'Comma-separated paths to skip, e.g. demo,**/fixtures/**. For workflows that are broken on purpose -- demos, fixtures, action templates -- where disable: would have to turn the rule off across the whole repository to tolerate one file. Skipped paths are named in the log.'
+    required: false
+    default: ''
   disable:
     description: 'Comma-separated rule ids to suppress, e.g. no-permissions,cache-key-static.'
     required: false
@@ -46,12 +50,14 @@ runs:
         AS_PATH: ${{ inputs.path }}
         AS_FAIL_ON: ${{ inputs.fail-on }}
         AS_MIN_SEVERITY: ${{ inputs.min-severity }}
+        AS_EXCLUDE: ${{ inputs.exclude }}
         AS_DISABLE: ${{ inputs.disable }}
         AS_ENABLE: ${{ inputs.enable }}
         AS_JSON: ${{ inputs.json }}
       run: |
         set -euo pipefail
         args=( --no-color --fail-on "$AS_FAIL_ON" --min-severity "$AS_MIN_SEVERITY" )
+        if [ -n "$AS_EXCLUDE" ]; then args+=( --exclude "$AS_EXCLUDE" ); fi
         if [ -n "$AS_DISABLE" ]; then args+=( --disable "$AS_DISABLE" ); fi
         if [ -n "$AS_ENABLE" ]; then args+=( --enable "$AS_ENABLE" ); fi
         if [ "$AS_JSON" = "true" ]; then args+=( --json ); fi

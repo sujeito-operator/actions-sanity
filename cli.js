@@ -27,6 +27,56 @@ const SKIP_DIRS = new Set([
 
 const SEVERITIES = ['error', 'warning', 'info'];
 
+// --exclude exists because a workflow can be broken on purpose. Demo repositories,
+// action templates and this repository's own `demo/` hold files that are meant to trip
+// every rule -- that is what they are for. Without a path filter the only escape is
+// `--disable`, which turns the rule off EVERYWHERE, so tolerating one fixture costs you
+// script-injection coverage across the whole repository. That trade is not worth making
+// and nobody should be asked to make it.
+//
+// Glob vocabulary, deliberately small: `*` matches within one path segment, `**` crosses
+// separators, `?` matches one character that is not a separator. Anything else is a
+// literal, including `.`.
+function globToRe(glob) {
+  let re = '';
+  for (let i = 0; i < glob.length; i++) {
+    const ch = glob[i];
+    if (ch === '*') {
+      if (glob[i + 1] === '*') { re += '.*'; i++; } else re += '[^/]*';
+    } else if (ch === '?') re += '[^/]';
+    else re += ch.replace(/[.+^${}()|[\]\\]/g, '\\$&');
+  }
+  return new RegExp(`^${re}$`);
+}
+
+// Three ways to match, because all three are what someone typing `--exclude demo` means:
+// the path itself, anything underneath it, and -- for a bare pattern with no separator --
+// any single segment, so `--exclude node_modules` works at any depth without a `**/`.
+// The matcher records what it turned away. A linter that silently drops files is the
+// failure this whole file is written against, so the summary says what was skipped and
+// the JSON carries the list -- an exclusion you forgot is then visible in the log rather
+// than showing up as a clean run.
+function makeMatcher(globs, skipped) {
+  const compiled = globs.map(g => {
+    const clean = g.replace(/\\/g, '/').replace(/\/+$/, '');
+    return { re: globToRe(clean), segment: !clean.includes('/') ? globToRe(clean) : null };
+  });
+  const hit = p => { if (skipped && !skipped.includes(p)) skipped.push(p); return true; };
+  return function excluded(p) {
+    const norm = p.replace(/\\/g, '/').replace(/^\.\//, '');
+    const segments = norm.split('/').filter(Boolean);
+    for (const c of compiled) {
+      if (c.re.test(norm)) return hit(p);
+      // A directory pattern excludes what is under it: `demo` hides `demo/x/y.yml`.
+      for (let i = 1; i < segments.length; i++) {
+        if (c.re.test(segments.slice(0, i).join('/'))) return hit(p);
+      }
+      if (c.segment && segments.some(s => c.segment.test(s))) return hit(p);
+    }
+    return false;
+  };
+}
+
 // Off unless asked for, matching the editor's default. `no-timeout` is true of almost
 // every workflow ever written -- measured against 40 real ones it fired 88 times. It is
 // real and it is noise, and a CI step that fires 88 times on adoption gets switched off
@@ -55,6 +105,13 @@ Usage
 
 Options
   --json                 Emit findings as JSON on stdout and print nothing else.
+  --exclude <globs>      Comma-separated paths to skip (repeatable). * stays inside one
+                         path segment, ** crosses them, ? is one character. A pattern
+                         with no / matches any segment, so --exclude demo skips demo/ at
+                         any depth. For workflows that are broken on purpose -- demos,
+                         fixtures, action templates -- where --disable would have to turn
+                         the rule off across the whole repository to tolerate one file.
+                         Skipped files are counted in the summary, never hidden.
   --disable <ids>        Comma-separated rule ids to suppress (repeatable).
   --enable <ids>         Turn on a rule that is off by default (${DEFAULT_DISABLED.join(', ')}).
   --min-severity <s>     Only report error | warning | info and above. Default: info.
@@ -86,7 +143,7 @@ Rules
 function parseArgs(argv) {
   const opts = {
     json: false, disabled: new Set(DEFAULT_DISABLED), minSeverity: 'info', failOn: 'error',
-    color: null, paths: [], help: false, version: false,
+    color: null, paths: [], help: false, version: false, exclude: [],
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -96,6 +153,7 @@ function parseArgs(argv) {
       return v;
     };
     if (a === '--json') opts.json = true;
+    else if (a === '--exclude') need().split(',').forEach(g => { if (g.trim()) opts.exclude.push(g.trim()); });
     else if (a === '--disable') need().split(',').forEach(r => { if (r.trim()) opts.disabled.add(r.trim()); });
     else if (a === '--enable') need().split(',').forEach(r => { if (r.trim()) opts.disabled.delete(r.trim()); });
     else if (a === '--min-severity') {
@@ -121,8 +179,15 @@ function parseArgs(argv) {
 // A path given explicitly is linted whatever it is called -- if you point this at a file
 // you have decided it is a workflow -- but a path that is walked has to sit in a
 // directory GitHub actually reads, or `.` would lint every YAML file in the repository.
-function collect(paths, out, errors) {
+// `excluded` is optional so that the three-argument calls that predate --exclude keep
+// working; with no matcher nothing is ever skipped.
+function collect(paths, out, errors, excluded) {
+  const skip = excluded || (() => false);
   for (const p of paths) {
+    // An excluded path is skipped even when named explicitly. Pointing at a file usually
+    // means "lint this whatever it is called", but --exclude is the more specific
+    // instruction of the two and the later one on the command line.
+    if (skip(p)) continue;
     let st;
     try {
       st = fs.statSync(p);
@@ -130,13 +195,14 @@ function collect(paths, out, errors) {
       errors.push(`cannot read ${p}: ${err.code || err.message}`);
       continue;
     }
-    if (st.isDirectory()) walk(p, out, errors);
+    if (st.isDirectory()) walk(p, out, errors, skip);
     else out.push(p);
   }
   return out;
 }
 
-function walk(dir, out, errors) {
+function walk(dir, out, errors, excluded) {
+  const skip = excluded || (() => false);
   let entries;
   try {
     entries = fs.readdirSync(dir, { withFileTypes: true });
@@ -148,10 +214,13 @@ function walk(dir, out, errors) {
   const here = isWorkflowDir(dir);
   for (const e of entries) {
     const full = path.join(dir, e.name);
+    // Pruning at the directory, not just filtering the files, so an excluded tree is
+    // never read at all.
+    if (skip(full)) continue;
     if (e.isDirectory()) {
       // GitHub does not recurse inside .github/workflows, so neither does this.
       if (here || SKIP_DIRS.has(e.name)) continue;
-      walk(full, out, errors);
+      walk(full, out, errors, skip);
     } else if (here && e.isFile() && YAML_EXT.test(e.name)) {
       out.push(full);
     }
@@ -247,12 +316,18 @@ function run(argv, io) {
 
   const color = opts.color === null ? io.colorDefault : opts.color;
   const errors = [];
-  const files = collect(opts.paths.length ? opts.paths : ['.'], [], errors);
+  const skipped = [];
+  const matcher = opts.exclude.length ? makeMatcher(opts.exclude, skipped) : null;
+  const files = collect(opts.paths.length ? opts.paths : ['.'], [], errors, matcher);
 
   if (!files.length && !errors.length) {
     const where = opts.paths.length ? opts.paths.join(', ') : 'the working directory';
-    if (opts.json) stdout(JSON.stringify({ version: PKG.version, files: [], findings: [] }, null, 2) + '\n');
-    else stdout(`actions-sanity: no .github/workflows found in ${where}.\n`);
+    // Saying "none found" when --exclude is why none were found would be a lie of
+    // omission, and the one most likely to hide a typo in the pattern.
+    const because = skipped.length ? ` (${skipped.length} path(s) excluded: ${skipped.join(', ')})` : '';
+    if (opts.json) {
+      stdout(JSON.stringify({ version: PKG.version, files: [], findings: [], excluded: skipped }, null, 2) + '\n');
+    } else stdout(`actions-sanity: no .github/workflows found in ${where}${because}.\n`);
     return 0;
   }
 
@@ -268,11 +343,15 @@ function run(argv, io) {
       version: PKG.version,
       files: results.map(r => r.file),
       findings,
+      excluded: skipped,
       errors,
     }, null, 2) + '\n');
   } else {
     const { text } = render(results, opts, color);
     stdout(text + '\n');
+    if (skipped.length) {
+      stdout(`actions-sanity: ${skipped.length} path(s) excluded: ${skipped.join(', ')}\n`);
+    }
   }
   for (const e of errors) stderr(`actions-sanity: ${e}\n`);
 
@@ -286,7 +365,10 @@ function run(argv, io) {
   return tripped ? 1 : 0;
 }
 
-module.exports = { run, parseArgs, collect, lintFile, isWorkflowDir, usage, SKIP_DIRS, DEFAULT_DISABLED };
+module.exports = {
+  run, parseArgs, collect, lintFile, isWorkflowDir, usage, SKIP_DIRS, DEFAULT_DISABLED,
+  makeMatcher, globToRe,
+};
 
 if (require.main === module) {
   const code = run(process.argv.slice(2), {

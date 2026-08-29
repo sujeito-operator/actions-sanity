@@ -61,7 +61,7 @@ runs — and reports:
 ## Use it in CI
 
 ```yaml
-- uses: sujeito-operator/actions-sanity@v0.1.0
+- uses: sujeito-operator/actions-sanity@v0.1.2
 ```
 
 That is the whole step. No `setup-` job, no Go toolchain, no container — it is a few
@@ -75,11 +75,12 @@ workflow GitHub will refuse to start, an attacker-controlled expression in a she
 step on a branch its author can move under you are errors. Tighten it when you are ready:
 
 ```yaml
-- uses: sujeito-operator/actions-sanity@v0.1.0
+- uses: sujeito-operator/actions-sanity@v0.1.2
   with:
     path: .                        # default: the whole repository
     fail-on: warning               # error (default) | warning | info | never
     min-severity: warning          # hide the info-level noise
+    exclude: demo,**/fixtures/**   # paths to skip — see below
     disable: no-permissions        # rule ids you disagree with
     enable: no-timeout             # rule ids that are off by default
     json: 'false'                  # machine-readable output for a later step
@@ -88,6 +89,20 @@ step on a branch its author can move under you are errors. Tighten it when you a
 The action passes every input through `env:` and quotes it, rather than interpolating
 `${{ inputs.x }}` into the script body. That is the exact hole this linter reports, and a
 linter that ships the bug it reports has no standing to report it.
+
+### Workflows that are broken on purpose
+
+If your repository ships example, fixture or template workflows, they will trip these
+rules — that is what they are for. Use `exclude` rather than `disable`: `disable` turns a
+rule off across the **whole** repository, so tolerating one demo file costs you
+script-injection coverage everywhere, while `exclude` drops only the paths you name and
+leaves every rule armed on the rest.
+
+`*` stays inside one path segment, `**` crosses them, `?` is one character, and a pattern
+with no `/` matches any segment — so `exclude: demo` skips `demo/` at any depth. Excluded
+paths are always named in the output, so a pattern that matches more than you meant shows
+up in the log instead of quietly turning the run green. This repository's own CI does
+exactly this: it lints itself at `fail-on: error` with `exclude: demo`.
 
 ## Use it on the command line
 

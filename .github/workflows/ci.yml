@@ -32,3 +32,8 @@ jobs:
       - uses: ./
         with:
           fail-on: error
+          # demo/.github/workflows/release.yml is the README's sample output and is
+          # broken on purpose -- it exists to trip every rule. Excluding the fixture is
+          # not the same as excusing a finding: everything else in this repository is
+          # still linted at fail-on: error, and the excluded path is named in the log.
+          exclude: demo
