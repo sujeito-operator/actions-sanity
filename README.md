@@ -47,6 +47,10 @@ runs — and reports:
 - **Third-party actions on a moving reference** — `@main` is a branch and `@v4` is a
   pointer. Both can be changed by their author after you review them. This is how the
   `tj-actions/changed-files` compromise reached tens of thousands of repositories.
+  *Third-party* means what it says: actions under `actions/`, `github/` **and your own
+  owner** are exempt, because "its author can re-tag this under you" is not a finding
+  when you are the author. Your owner is read from `GITHUB_REPOSITORY` or your `origin`
+  remote and always printed with the findings; see *Your own actions* below.
 - **Jobs on the repository default token** — no `permissions:` anywhere means every step,
   including third-party ones, gets whatever the repository default is.
 - **`needs:` naming a job that does not exist** — GitHub refuses the entire workflow, so
@@ -68,7 +72,7 @@ runs — and reports:
 ## Use it in CI
 
 ```yaml
-- uses: sujeito-operator/actions-sanity@v0.1.3
+- uses: sujeito-operator/actions-sanity@v0.1.4
 ```
 
 That is the whole step. No `setup-` job, no Go toolchain, no container — it is a few
@@ -82,7 +86,7 @@ workflow GitHub will refuse to start, an attacker-controlled expression in a she
 step on a branch its author can move under you are errors. Tighten it when you are ready:
 
 ```yaml
-- uses: sujeito-operator/actions-sanity@v0.1.3
+- uses: sujeito-operator/actions-sanity@v0.1.4
   with:
     path: .                        # default: the whole repository
     fail-on: warning               # error (default) | warning | info | never
@@ -91,7 +95,38 @@ step on a branch its author can move under you are errors. Tighten it when you a
     disable: no-permissions        # rule ids you disagree with
     enable: no-timeout             # rule ids that are off by default
     json: 'false'                  # machine-readable output for a later step
+    first-party-owner: auto        # auto (default) | off | an owner name
 ```
+
+## Your own actions
+
+An organisation that publishes its own actions and uses them in its own repositories was
+being told, by this tool, that "its author can move this tag at any time" — about an
+action it is the author of. Measured over ~570 workflow files in 30 professional
+repositories, that was **26 findings across three owners** and every one of them was
+wrong about who is exposed to whom: 23 in `dolthub/dolt` (`dolthub/upload-release-asset`,
+`dolthub/pull-request-comment-trigger` and eight others), 2 in `commaai/opendbc`
+(`commaai/timeout`), 1 in `temporalio/temporal`.
+
+So an action whose owner is the owner of the repository being linted is now first party,
+the same way `actions/*` and `github/*` are. The owner is resolved once per run, from —
+in order — the `--owner` option, `GITHUB_REPOSITORY`, and the `origin` remote of the
+repository on disk. **In CI and in the editor this needs no configuration.**
+
+Because this setting is the one that makes findings *disappear*, it is deliberately hard
+to apply by accident and impossible to apply invisibly:
+
+- Only `github.com` remotes named `origin` are read. A GHES or GitLab remote, a remote
+  named `upstream`, or a `GITHUB_REPOSITORY` that is not exactly `owner/repo` all resolve
+  to *no owner* — which leaves every non-GitHub action third party and reporting.
+- The owner is matched as a whole path segment, so `comma` does not exempt `commaai/*`.
+- Whatever was resolved, and where it came from, is printed with the findings and carried
+  in `--json` as `owner` and `ownerSource`.
+- `--owner ""` (or `first-party-owner: off`, or `"actionsSanity.repositoryOwner": ""`)
+  turns the exemption off entirely.
+
+A `uses:` with **no** `@` at all still reports whoever owns it. That is a different
+defect — the workflow text does not say what it runs — and your own maintainers read it.
 
 The action passes every input through `env:` and quotes it, rather than interpolating
 `${{ inputs.x }}` into the script body. That is the exact hole this linter reports, and a
