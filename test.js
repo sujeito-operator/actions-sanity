@@ -191,6 +191,58 @@ t('does NOT nag about actions/* and github/*, which GitHub itself publishes', ()
 });
 t('flags a uses: with no version at all', () =>
   assert.ok(has(usesWf('some/action'), 'unpinned-action')));
+
+// --- first party by owner ---------------------------------------------------
+// The three shapes below are the MEASURED false positives from the 2026-08-29/30 sweep
+// of ~570 workflow files, not invented cases. Each one had this tool telling an owner
+// that "its author" might re-tag an action that owner publishes.
+const owned = (wf, owner) => analyze(wf, { owner }).map(p => p.rule);
+t('commaai/timeout@v1 inside commaai is first party, not unpinned-action', () => {
+  assert.ok(has(usesWf('commaai/timeout@v1'), 'unpinned-action'), 'baseline: fires with no owner');
+  assert.ok(!owned(usesWf('commaai/timeout@v1'), 'commaai').includes('unpinned-action'));
+});
+t('temporalio/deputy/actions/x@main inside temporalio is first party', () => {
+  const wf = usesWf('temporalio/deputy/actions/setup@main');
+  assert.ok(rules(wf).includes('action-branch-ref'), 'baseline: fires with no owner');
+  assert.ok(!owned(wf, 'temporalio').includes('action-branch-ref'));
+});
+t('dolthub/label-customer-issues@main inside dolthub is first party', () =>
+  assert.ok(!owned(usesWf('dolthub/label-customer-issues@main'), 'dolthub')
+    .includes('action-branch-ref')));
+t('owner matching is case-insensitive, as GitHub owner names are', () =>
+  assert.ok(!owned(usesWf('CommaAI/timeout@v1'), 'commaai').includes('unpinned-action')));
+
+// The exemption must not become a hole. These are the cases where it must NOT apply.
+t('a DIFFERENT owner is still third party even when an owner is known', () => {
+  const r = owned(usesWf('tj-actions/changed-files@main'), 'commaai');
+  assert.ok(r.includes('action-branch-ref'), r.join());
+});
+t('an owner that is a PREFIX of the action owner does not exempt it', () => {
+  // `comma` must not swallow `commaai/`. Matching the segment, not the string, is the
+  // difference between an exemption and a bypass anyone can register a name for.
+  assert.ok(owned(usesWf('commaai/timeout@main'), 'comma').includes('action-branch-ref'));
+  assert.ok(owned(usesWf('comma/timeout@main'), 'commaai').includes('action-branch-ref'));
+});
+t('no owner, empty owner and junk owner all leave every rule reporting', () => {
+  for (const o of [undefined, null, '', '   ', 42, {}]) {
+    assert.ok(analyze(usesWf('commaai/timeout@main'), { owner: o })
+      .some(p => p.rule === 'action-branch-ref'), `owner=${JSON.stringify(o)}`);
+  }
+  assert.ok(has(usesWf('commaai/timeout@main'), 'action-branch-ref'));
+});
+t('a first-party action with NO ref at all still reports -- a different defect', () => {
+  // Not an oversight: no `@` means the workflow text does not say what it runs, which is
+  // unreadable for the repository's own maintainers however owns the action. This is
+  // also the pre-existing behaviour for actions/* and it is deliberately unchanged.
+  assert.ok(owned(usesWf('commaai/timeout'), 'commaai').includes('unpinned-action'));
+  assert.ok(has(usesWf('actions/checkout'), 'unpinned-action'));
+});
+t('the owner exemption changes nothing else about a workflow', () => {
+  assert.deepStrictEqual(analyze(CLEAN, { owner: 'someone' }), []);
+  const wf = usesWf('commaai/timeout@main');
+  const dropped = rules(wf).filter(r => !owned(wf, 'commaai').includes(r));
+  assert.deepStrictEqual(dropped, ['action-branch-ref'], dropped.join());
+});
 t('does NOT flag a local action or a docker:// reference', () => {
   assert.ok(!rules(usesWf('./.github/actions/build')).some(r => r.includes('pinned') || r.includes('branch-ref')));
   assert.ok(!rules(usesWf('docker://alpine:3.20')).some(r => r.includes('pinned') || r.includes('branch-ref')));
