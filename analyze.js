@@ -125,6 +125,13 @@ const UNTRUSTED_REFS = [
 
 const FIRST_PARTY = /^(actions|github)\//;
 
+// Expression scopes whose value is chosen somewhere this file cannot read: another
+// job's output, an earlier step's output, an environment variable a `run:` step may
+// have written with `>> $GITHUB_ENV`, a reusable-workflow input, a matrix leg, or a
+// repository variable. A cache key built from one of these is not knowable as static
+// or varying from the text, so `cache-key-static` says nothing about it.
+const OPAQUE_REF = /\$\{\{[^}]*\b(needs|steps|env|inputs|matrix|vars|secrets)\./;
+
 function isSha(ref) {
   return /^[0-9a-f]{40}$/i.test(ref);
 }
@@ -210,6 +217,19 @@ function analyze(text) {
   // squiggle on every job in the file to say one thing is how a linter gets uninstalled.
   const unscoped = [];
 
+  // Who depends on whom, read off `needs:` before the per-job walk. Used by
+  // `job-continue-on-error` -- see there for what it changed and why.
+  const dependents = {};
+  for (const id of jobIds) {
+    const j = jobs[id];
+    if (!j || typeof j !== 'object') continue;
+    const ns = j.needs == null ? [] : Array.isArray(j.needs) ? j.needs : [j.needs];
+    for (const n of ns) {
+      if (typeof n !== 'string') continue;
+      (dependents[n] = dependents[n] || []).push(id);
+    }
+  }
+
   // --- per job -------------------------------------------------------------
 
   for (const jobId of jobIds) {
@@ -240,11 +260,38 @@ function analyze(text) {
     }
 
     if (job['continue-on-error'] === true) {
-      add('job-continue-on-error', 'warning',
-        (() => { const l = findKey(lines, 'continue-on-error', jstart, jend); return l >= 0 ? l : jobLine; })(),
-        'Job `' + jobId + '` has `continue-on-error: true`, so it reports SUCCESS ' +
-        'whatever happens inside it. If this job is a required check, it is a green ' +
-        'tick that cannot go red.');
+      // MEASURED 2026-08-30 across ~570 workflow files in 30 professional repositories:
+      // this fired 5 times as a `warning` and a hand-read rejected all 5. Every one was
+      // a job that is non-blocking ON PURPOSE -- zitadel's `homebrew-tap`, `helm-chart`
+      // and `npm-packages` release legs, fastly/cli's `golangci-latest` canary,
+      // super-productivity's `deploy-preview`. The old message already conceded the
+      // problem in its own second sentence: "IF this job is a required check". Whether
+      // it is required lives in branch protection, which is not in this file, so at
+      // `warning` the rule was asserting something it cannot see.
+      //
+      // One half of it IS visible here, and it is the sharper bug: GitHub counts a
+      // `continue-on-error` job as SUCCESS when resolving `needs:`, so a job that other
+      // jobs wait on cannot gate them. That is decidable from the text, so it keeps the
+      // warning. A job nothing depends on drops to `info` and says what it cannot know.
+      const waiters = dependents[jobId] || [];
+      const line = (() => {
+        const l = findKey(lines, 'continue-on-error', jstart, jend);
+        return l >= 0 ? l : jobLine;
+      })();
+      if (waiters.length) {
+        add('job-continue-on-error', 'warning', line,
+          'Job `' + jobId + '` has `continue-on-error: true`, so it reports SUCCESS ' +
+          'whatever happens inside it -- and `' + waiters.join('`, `') + '` ' +
+          (waiters.length > 1 ? 'wait' : 'waits') + ' on it with `needs:`. GitHub ' +
+          'treats a continue-on-error job as successful when resolving `needs:`, so ' +
+          'this job cannot stop what comes after it, however it fails.');
+      } else {
+        add('job-continue-on-error', 'info', line,
+          'Job `' + jobId + '` has `continue-on-error: true`, so it reports SUCCESS ' +
+          'whatever happens inside it. Nothing in this file depends on it, so this is ' +
+          'only a problem if branch protection lists it as a required check -- a green ' +
+          'tick that cannot go red. That setting is not visible from the workflow.');
+      }
     }
 
     const steps = Array.isArray(job.steps) ? job.steps : [];
@@ -327,6 +374,25 @@ function analyze(text) {
       }
 
       // -- cache keys, in both directions -----------------------------------
+      // MEASURED 2026-08-30 against ~570 workflow files in 30 professional
+      // repositories: `cache-key-static` fired 8 times and a hand-read rejected all 8.
+      // SEVEN of the eight were one cause -- the key is a REFERENCE, not a literal, and
+      // this rule read the reference text:
+      //
+      //   PrefectHQ/prefect  key: ${{ needs.setup.outputs.cache-key }}   (x4)
+      //   mondoohq/cnspec    key: ...-${{ env.PROVIDER_CACHE_DAY }}
+      //   gruntwork/terragrunt  key: gon-${{ env.GON_VERSION }}
+      //   LMCache/LMCache    key: hf-hub-${{ matrix.model.name }}-v2
+      //
+      // Prefect is the sharpest: `setup` computes the key ONCE from
+      // `hashFiles('ui-v2/package-lock.json')` and publishes it as a job output, which is
+      // the recommended shape for a multi-job workflow -- and this rule reported the four
+      // consumers of a correct design. When the key is assembled out of this file's
+      // sight, whether it tracks the lockfile is NOT DECIDABLE HERE, and a linter that
+      // guesses in that situation is the false positive that gets it uninstalled.
+      // `runner.*` and `github.*` are deliberately NOT in this list: they resolve to
+      // values this rule can reason about, so `${{ runner.os }}-docker-integrations`
+      // (dolthub/dolt, the ONE true instance in the sweep) still reports.
       // A cache key can be wrong two opposite ways and the first version of this rule
       // reported the wrong one on a real workflow. A key holding `github.sha` changes
       // on EVERY run, so nothing ever restores it -- unless `restore-keys` is set, which
@@ -347,6 +413,9 @@ function analyze(text) {
               'will ever read. Either add a `restore-keys:` prefix, or key on ' +
               '`hashFiles(...)` of the lockfile.');
           }
+        } else if (OPAQUE_REF.test(key) || OPAQUE_REF.test(restore)) {
+          // Silent on purpose. See OPAQUE_REF: the key is assembled somewhere this
+          // file cannot read, so whether it tracks the lockfile is not decidable here.
         } else if (!/hashFiles\s*\(/.test(key) && !/hashFiles\s*\(/.test(restore)) {
           add('cache-key-static', 'warning', line,
             'This cache key contains no `hashFiles(...)`, so it does not change when the ' +
