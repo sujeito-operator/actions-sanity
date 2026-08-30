@@ -27,6 +27,90 @@ const SKIP_DIRS = new Set([
 
 const SEVERITIES = ['error', 'warning', 'info'];
 
+// --- who owns the repository being linted ------------------------------------------
+// analyze.js exempts an action published by the SAME owner as the repository under scan,
+// because "its author can move this tag under you" is not a finding when the reader IS
+// the author. That exemption is only as good as the answer here, and a WRONG answer
+// suppresses a real supply-chain finding -- the one direction this tool must never fail
+// in silently. So: the accepted sources are narrow, anything unrecognised yields null
+// (which keeps every non-GitHub action third party and reporting), and whatever was
+// resolved is always stated in the output rather than applied invisibly.
+//
+// Accepts scp-style (git@github.com:owner/repo.git), https, and ssh:// remotes, and
+// only on github.com -- a GHES or GitLab host is not a namespace this rule reasons about.
+const GH_REMOTE =
+  /^(?:(?:https?|ssh|git):\/\/)?(?:[^@/]+@)?github\.com[:/]+([^/]+)\/([^/]+?)(?:\.git)?\/?$/i;
+
+function ownerFromRemoteUrl(url) {
+  const m = GH_REMOTE.exec(String(url || '').trim());
+  return m ? m[1] : null;
+}
+
+// The `.git` next to the worktree is a directory in an ordinary clone and a file holding
+// `gitdir:` in a linked worktree or a submodule. A linked worktree's own git dir has no
+// `config` of its own -- `commondir` points at the main repository, which is where the
+// remotes live -- so following it is what makes this work inside `git worktree`.
+function gitDirOf(startDir) {
+  let cur = path.resolve(startDir);
+  for (;;) {
+    const g = path.join(cur, '.git');
+    let st = null;
+    try { st = fs.statSync(g); } catch (err) { st = null; }
+    if (st && st.isDirectory()) return g;
+    if (st && st.isFile()) {
+      let m = null;
+      try { m = /^gitdir:\s*(.+?)\s*$/m.exec(fs.readFileSync(g, 'utf8')); } catch (err) { m = null; }
+      if (!m) return null;
+      const gd = path.resolve(cur, m[1]);
+      try {
+        return path.resolve(gd, fs.readFileSync(path.join(gd, 'commondir'), 'utf8').trim());
+      } catch (err) { return gd; }
+    }
+    const up = path.dirname(cur);
+    if (up === cur) return null;
+    cur = up;
+  }
+}
+
+// Only `origin`. A repository with three remotes has no single owner this file can pick,
+// and guessing among them is exactly how the wrong owner gets applied in silence.
+function ownerFromGit(startDir) {
+  const gd = gitDirOf(startDir);
+  if (!gd) return null;
+  let text;
+  try { text = fs.readFileSync(path.join(gd, 'config'), 'utf8'); } catch (err) { return null; }
+  let inOrigin = false;
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim();
+    const sect = /^\[\s*remote\s+"([^"]*)"\s*\]$/.exec(line);
+    if (sect) { inOrigin = sect[1] === 'origin'; continue; }
+    if (/^\[/.test(line)) { inOrigin = false; continue; }
+    if (!inOrigin) continue;
+    const kv = /^url\s*=\s*(.+)$/.exec(line);
+    if (kv) return ownerFromRemoteUrl(kv[1]);
+  }
+  return null;
+}
+
+// Precedence: what the caller said, then what GitHub Actions says about itself, then the
+// clone on disk. `--owner ""` is an explicit "I do not know", and it wins over both.
+function detectOwner(opts, env, cwd) {
+  if (opts.ownerGiven) {
+    return { owner: opts.owner || null, source: opts.owner ? 'the --owner option' : 'disabled by --owner ""' };
+  }
+  const slug = String((env && env.GITHUB_REPOSITORY) || '').trim();
+  const m = /^([^/\s]+)\/[^/\s]+$/.exec(slug);
+  if (m) return { owner: m[1], source: 'GITHUB_REPOSITORY' };
+  const roots = opts.paths.length ? opts.paths : [cwd || '.'];
+  for (const p of roots) {
+    let base = path.resolve(cwd || '.', p);
+    try { if (fs.statSync(base).isFile()) base = path.dirname(base); } catch (err) { /* walk anyway */ }
+    const owner = ownerFromGit(base);
+    if (owner) return { owner, source: `the origin remote of ${p}` };
+  }
+  return { owner: null, source: null };
+}
+
 // --exclude exists because a workflow can be broken on purpose. Demo repositories,
 // action templates and this repository's own `demo/` hold files that are meant to trip
 // every rule -- that is what they are for. Without a path filter the only escape is
@@ -112,6 +196,13 @@ Options
                          fixtures, action templates -- where --disable would have to turn
                          the rule off across the whole repository to tolerate one file.
                          Skipped files are counted in the summary, never hidden.
+  --owner <name>         The owner of the repository being linted. Actions published by
+                         that owner are treated as first party, the same way actions/*
+                         and github/* are, because "its author can re-tag this under you"
+                         is not a finding when the reader is the author. Detected from
+                         GITHUB_REPOSITORY and then the origin remote, so it is usually
+                         not needed; pass --owner "" to turn the exemption off entirely.
+                         Whatever is resolved is printed with the findings.
   --disable <ids>        Comma-separated rule ids to suppress (repeatable).
   --enable <ids>         Turn on a rule that is off by default (${DEFAULT_DISABLED.join(', ')}).
   --min-severity <s>     Only report error | warning | info and above. Default: info.
@@ -144,6 +235,7 @@ function parseArgs(argv) {
   const opts = {
     json: false, disabled: new Set(DEFAULT_DISABLED), minSeverity: 'info', failOn: 'error',
     color: null, paths: [], help: false, version: false, exclude: [],
+    owner: null, ownerGiven: false,
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -153,6 +245,7 @@ function parseArgs(argv) {
       return v;
     };
     if (a === '--json') opts.json = true;
+    else if (a === '--owner') { opts.owner = need().trim(); opts.ownerGiven = true; }
     else if (a === '--exclude') need().split(',').forEach(g => { if (g.trim()) opts.exclude.push(g.trim()); });
     else if (a === '--disable') need().split(',').forEach(r => { if (r.trim()) opts.disabled.add(r.trim()); });
     else if (a === '--enable') need().split(',').forEach(r => { if (r.trim()) opts.disabled.delete(r.trim()); });
@@ -236,7 +329,7 @@ function lintFile(file, opts) {
   }
   let problems;
   try {
-    problems = analyze(text);
+    problems = analyze(text, { owner: opts.owner });
   } catch (err) {
     // A linter that throws on a malformed file is worse than one that says nothing, but
     // in CI it has to be visible rather than swallowed the way an editor squiggle can be.
@@ -315,6 +408,10 @@ function run(argv, io) {
   if (opts.version) { stdout(`${PKG.version}\n`); return 0; }
 
   const color = opts.color === null ? io.colorDefault : opts.color;
+  // Resolved once for the whole run, before any file is read, so every file in one
+  // invocation is judged against the same owner.
+  const detected = detectOwner(opts, io.env || process.env, io.cwd || process.cwd());
+  opts.owner = detected.owner;
   const errors = [];
   const skipped = [];
   const matcher = opts.exclude.length ? makeMatcher(opts.exclude, skipped) : null;
@@ -344,6 +441,8 @@ function run(argv, io) {
       files: results.map(r => r.file),
       findings,
       excluded: skipped,
+      owner: detected.owner,
+      ownerSource: detected.source,
       errors,
     }, null, 2) + '\n');
   } else {
@@ -351,6 +450,13 @@ function run(argv, io) {
     stdout(text + '\n');
     if (skipped.length) {
       stdout(`actions-sanity: ${skipped.length} path(s) excluded: ${skipped.join(', ')}\n`);
+    }
+    // Stated on every run that resolved one, because this is the setting that makes
+    // findings DISAPPEAR. An owner detected wrongly has to be visible in the log rather
+    // than showing up as a repository that got quieter for no stated reason.
+    if (detected.owner) {
+      stdout(`actions-sanity: treating \`${detected.owner}/*\` actions as first party `
+        + `(owner from ${detected.source}; --owner "" turns this off).\n`);
     }
   }
   for (const e of errors) stderr(`actions-sanity: ${e}\n`);
@@ -367,7 +473,7 @@ function run(argv, io) {
 
 module.exports = {
   run, parseArgs, collect, lintFile, isWorkflowDir, usage, SKIP_DIRS, DEFAULT_DISABLED,
-  makeMatcher, globToRe,
+  makeMatcher, globToRe, detectOwner, ownerFromRemoteUrl, ownerFromGit, gitDirOf,
 };
 
 if (require.main === module) {
