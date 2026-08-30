@@ -51,17 +51,24 @@ runs — and reports:
   including third-party ones, gets whatever the repository default is.
 - **`needs:` naming a job that does not exist** — GitHub refuses the entire workflow, so
   the run you are waiting for never starts.
-- **`continue-on-error: true` on a job** — it reports success whatever happens inside. If
-  it is a required check, it is a green tick that cannot go red.
+- **`continue-on-error: true` on a job** — it reports success whatever happens inside.
+  When another job `needs:` it, that is a warning and the message names the waiters:
+  GitHub counts a continue-on-error job as successful when resolving `needs:`, so the job
+  cannot stop what comes after it. When nothing in the file depends on it, it drops to
+  `info`, because whether it is a *required check* lives in branch protection and no
+  linter can see that from the workflow.
 - **Caches that never hit, and caches that never miss** — a key with no `hashFiles(...)`
   restores the same stale cache forever; a key holding `github.sha` with no
-  `restore-keys` is written on every run and read by none.
+  `restore-keys` is written on every run and read by none. A key assembled out of the
+  file's sight — `needs.*.outputs.*`, `steps.*.outputs.*`, `env.*`, `matrix.*`,
+  `inputs.*` — reports **nothing**, because whether it tracks your lockfile is not
+  decidable from the text.
 - **Invalid YAML and duplicate keys** — GitHub keeps the last duplicate silently.
 
 ## Use it in CI
 
 ```yaml
-- uses: sujeito-operator/actions-sanity@v0.1.2
+- uses: sujeito-operator/actions-sanity@v0.1.3
 ```
 
 That is the whole step. No `setup-` job, no Go toolchain, no container — it is a few
@@ -75,7 +82,7 @@ workflow GitHub will refuse to start, an attacker-controlled expression in a she
 step on a branch its author can move under you are errors. Tighten it when you are ready:
 
 ```yaml
-- uses: sujeito-operator/actions-sanity@v0.1.2
+- uses: sujeito-operator/actions-sanity@v0.1.3
   with:
     path: .                        # default: the whole repository
     fail-on: warning               # error (default) | warning | info | never
