@@ -18,12 +18,17 @@ function t(name, fn) {
   catch (e) { failures++; console.log('  FAIL ' + name + '\n       ' + (e.stack || e.message)); }
 }
 
+// `env` defaults to EMPTY, not process.env: owner detection reads GITHUB_REPOSITORY, and
+// a suite that inherited it would pass or fail depending on whether it happened to be run
+// inside GitHub Actions. Tests that care about it pass one in.
 function invoke(argv, opts) {
   let out = '', err = '';
   const code = cli.run(argv, {
     stdout: s => { out += s; },
     stderr: s => { err += s; },
     colorDefault: (opts && opts.color) || false,
+    env: (opts && opts.env) || {},
+    cwd: (opts && opts.cwd) || process.cwd(),
   });
   return { code, out, err };
 }
@@ -342,6 +347,145 @@ t('every rule named in --help exists in the configuration enum', () => {
     assert.ok(help.includes(rule), `--help never mentions ${rule}`);
   }
 });
+
+console.log('\nrepository owner detection');
+// An owner resolved WRONGLY makes a real supply-chain finding disappear, so every source
+// gets a test and so does every way of declining to answer.
+const OWNED = `name: ci
+on: push
+permissions:
+  contents: read
+jobs:
+  a:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: commaai/timeout@main
+`;
+// A repository laid out like a real clone: a workflow, and a .git/config naming origin.
+function repo(prefix, url, remote) {
+  const d = fs.mkdtempSync(path.join(tmp, prefix));
+  fs.mkdirSync(path.join(d, '.github', 'workflows'), { recursive: true });
+  fs.writeFileSync(path.join(d, '.github', 'workflows', 'ci.yml'), OWNED);
+  if (url !== null) {
+    fs.mkdirSync(path.join(d, '.git'), { recursive: true });
+    fs.writeFileSync(path.join(d, '.git', 'config'),
+      `[core]\n\trepositoryformatversion = 0\n[remote "${remote || 'origin'}"]\n\turl = ${url}\n\tfetch = +refs/heads/*:refs/remotes/origin/*\n`);
+  }
+  return d;
+}
+
+t('a no-owner run reports the owner\'s own action — the baseline being fixed', () => {
+  const d = repo('own-none-', null);
+  const r = invoke([d]);
+  assert.strictEqual(r.code, 1);
+  assert.ok(/action-branch-ref/.test(r.out), r.out);
+  assert.ok(!/first party/.test(r.out), r.out);
+});
+t('--owner exempts the owner\'s own action and flips the exit code', () => {
+  const d = repo('own-flag-', null);
+  const r = invoke(['--owner', 'commaai', d]);
+  assert.strictEqual(r.code, 0);
+  assert.ok(!/action-branch-ref/.test(r.out), r.out);
+});
+t('GITHUB_REPOSITORY is read, which is what makes the Action work with no config', () => {
+  const d = repo('own-env-', null);
+  const r = invoke([d], { env: { GITHUB_REPOSITORY: 'commaai/opendbc' } });
+  assert.strictEqual(r.code, 0);
+  assert.ok(/commaai\/\*/.test(r.out) && /GITHUB_REPOSITORY/.test(r.out), r.out);
+});
+t('a malformed GITHUB_REPOSITORY is ignored rather than half-parsed', () => {
+  for (const bad of ['commaai', '/opendbc', 'a/b/c', '', '   ']) {
+    const d = repo('own-bad-', null);
+    const r = invoke([d], { env: { GITHUB_REPOSITORY: bad } });
+    assert.strictEqual(r.code, 1, `GITHUB_REPOSITORY=${JSON.stringify(bad)} was accepted`);
+  }
+});
+t('the origin remote is read from .git/config, in all three URL spellings', () => {
+  for (const url of ['git@github.com:commaai/opendbc.git',
+    'https://github.com/commaai/opendbc.git',
+    'https://github.com/commaai/opendbc',
+    'ssh://git@github.com/commaai/opendbc.git']) {
+    const d = repo('own-git-', url);
+    const r = invoke([d]);
+    assert.strictEqual(r.code, 0, `${url} -> ${r.out}`);
+    assert.ok(/origin remote/.test(r.out), r.out);
+  }
+});
+t('a non-github.com remote resolves to no owner, so nothing is exempted', () => {
+  for (const url of ['git@gitlab.com:commaai/opendbc.git',
+    'https://git.example.com/commaai/opendbc.git',
+    'https://github.com.evil.example/commaai/opendbc.git']) {
+    const d = repo('own-host-', url);
+    assert.strictEqual(invoke([d]).code, 1, `${url} was treated as github.com`);
+  }
+});
+t('a remote that is not named origin is not guessed from', () => {
+  const d = repo('own-upstream-', 'git@github.com:commaai/opendbc.git', 'upstream');
+  assert.strictEqual(invoke([d]).code, 1);
+});
+t('--owner "" turns the exemption off even inside a detectable clone', () => {
+  const d = repo('own-off-', 'git@github.com:commaai/opendbc.git');
+  const r = invoke(['--owner', '', d]);
+  assert.strictEqual(r.code, 1, r.out);
+  assert.ok(!/first party/.test(r.out), r.out);
+});
+t('--owner beats GITHUB_REPOSITORY, which beats the origin remote', () => {
+  const d = repo('own-prec-', 'git@github.com:someoneelse/repo.git');
+  assert.strictEqual(invoke([d], { env: { GITHUB_REPOSITORY: 'commaai/opendbc' } }).code, 0);
+  assert.strictEqual(invoke(['--owner', 'commaai', d],
+    { env: { GITHUB_REPOSITORY: 'someoneelse/repo' } }).code, 0);
+});
+t('the resolved owner is on stdout, never applied invisibly', () => {
+  const d = repo('own-say-', 'git@github.com:commaai/opendbc.git');
+  const r = invoke([d]);
+  assert.ok(/treating `commaai\/\*` actions as first party/.test(r.out), r.out);
+  assert.ok(/--owner ""/.test(r.out), 'the way to turn it off is not stated');
+});
+t('--json carries owner and ownerSource so a sweep can check what was applied', () => {
+  const d = repo('own-json-', 'git@github.com:commaai/opendbc.git');
+  const j = JSON.parse(invoke(['--json', d]).out);
+  assert.strictEqual(j.owner, 'commaai');
+  assert.ok(/origin remote/.test(j.ownerSource), j.ownerSource);
+  const none = JSON.parse(invoke(['--json', repo('own-json2-', null)]).out);
+  assert.strictEqual(none.owner, null);
+  assert.strictEqual(none.ownerSource, null);
+});
+t('the owner is found by walking up, not only at the path given', () => {
+  const d = repo('own-walk-', 'git@github.com:commaai/opendbc.git');
+  // Pointing straight at the workflows directory, three levels below the .git.
+  assert.strictEqual(invoke([path.join(d, '.github', 'workflows')]).code, 0);
+  // ...and straight at the file.
+  assert.strictEqual(invoke([path.join(d, '.github', 'workflows', 'ci.yml')]).code, 0);
+});
+t('a linked worktree follows commondir to the real repository config', () => {
+  const main = repo('own-wt-main-', 'git@github.com:commaai/opendbc.git');
+  const wt = fs.mkdtempSync(path.join(tmp, 'own-wt-'));
+  fs.mkdirSync(path.join(wt, '.github', 'workflows'), { recursive: true });
+  fs.writeFileSync(path.join(wt, '.github', 'workflows', 'ci.yml'), OWNED);
+  const gd = path.join(main, '.git', 'worktrees', 'wt');
+  fs.mkdirSync(gd, { recursive: true });
+  fs.writeFileSync(path.join(gd, 'commondir'), '../..\n');
+  fs.writeFileSync(path.join(wt, '.git'), `gitdir: ${gd}\n`);
+  assert.strictEqual(cli.ownerFromGit(wt), 'commaai');
+  assert.strictEqual(invoke([wt]).code, 0);
+});
+t('a .git file pointing nowhere is no owner rather than a crash', () => {
+  const d = fs.mkdtempSync(path.join(tmp, 'own-broken-'));
+  fs.mkdirSync(path.join(d, '.github', 'workflows'), { recursive: true });
+  fs.writeFileSync(path.join(d, '.github', 'workflows', 'ci.yml'), OWNED);
+  fs.writeFileSync(path.join(d, '.git'), 'not a gitdir line at all\n');
+  assert.strictEqual(cli.gitDirOf(d), null);
+  assert.strictEqual(invoke([d]).code, 1);
+});
+t('ownerFromRemoteUrl rejects what it cannot read instead of guessing', () => {
+  assert.strictEqual(cli.ownerFromRemoteUrl('git@github.com:a/b.git'), 'a');
+  for (const bad of ['', null, undefined, 'github.com', 'https://github.com/onlyowner',
+    'not a url', 'https://example.com/a/b.git']) {
+    assert.strictEqual(cli.ownerFromRemoteUrl(bad), null, JSON.stringify(bad));
+  }
+});
+t('--owner is documented in --help', () =>
+  assert.ok(/--owner/.test(cli.usage()) && /first party/.test(cli.usage())));
 
 fs.rmSync(tmp, { recursive: true, force: true });
 console.log(failures ? `\n${failures} FAILING` : '\nall passing');
