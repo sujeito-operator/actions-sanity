@@ -123,7 +123,37 @@ const UNTRUSTED_REFS = [
   'github.event.workflow_run.head_branch',
 ];
 
-const FIRST_PARTY = /^(actions|github)\//;
+// GitHub's own two namespaces. `actions/checkout@v4` is not a supply-chain risk anyone
+// is going to act on, and reporting it is how a linter trains its reader to ignore it.
+const GITHUB_NAMESPACE = /^(actions|github)\//;
+
+// The OTHER first party: the repository's own owner. MEASURED 2026-08-29/30 across ~570
+// workflow files in 30 professional repositories, where this was the same false positive
+// twice under two different rule ids --
+//
+//   commaai/opendbc          uses: commaai/timeout@v1                (unpinned-action)
+//   temporalio/...           uses: temporalio/deputy/actions/*@main  (action-branch-ref, x9)
+//   dolthub/dolt             uses: dolthub/label-customer-issues@main (action-branch-ref)
+//
+// -- and in every case the tool told an owner that "its author can move the tag at any
+// time" about an action THAT OWNER PUBLISHES. The reader is the author. The sentence is
+// not merely noise there, it is wrong about who is exposed to whom, and being visibly
+// wrong on a repository the reader knows well is the fastest way to be uninstalled.
+//
+// Case-insensitive because GitHub owner names are.
+function actionOwner(name) {
+  const slash = name.indexOf('/');
+  return slash < 0 ? '' : name.slice(0, slash).toLowerCase();
+}
+
+// `opts.owner` is the owner of the repository being scanned, when the caller knows it.
+// It is ALWAYS optional and the failure direction is deliberate: not knowing the owner
+// means every non-GitHub action stays third party and keeps reporting. A wrong or absent
+// owner therefore costs a false positive, never a missed finding -- which is the correct
+// way round for a rule whose whole subject is supply-chain exposure.
+function normOwner(owner) {
+  return typeof owner === 'string' && owner.trim() ? owner.trim().toLowerCase() : null;
+}
 
 // Expression scopes whose value is chosen somewhere this file cannot read: another
 // job's output, an earlier step's output, an environment variable a `run:` step may
@@ -138,8 +168,12 @@ function isSha(ref) {
 
 // ---------------------------------------------------------------------------
 
-function analyze(text) {
+function analyze(text, opts) {
   const problems = [];
+  const owner = normOwner(opts && opts.owner);
+  // First party = GitHub's own namespaces, OR the owner of the repository under scan.
+  const isFirstParty = (name) =>
+    GITHUB_NAMESPACE.test(name) || (owner !== null && actionOwner(name) === owner);
   const lines = splitLines(text);
   const add = (rule, severity, line, message) =>
     problems.push({ rule, severity, line: Math.max(0, line), message });
@@ -353,11 +387,17 @@ function analyze(text) {
       if (uses && !uses.startsWith('./') && !uses.startsWith('docker://')) {
         const [name, ref] = uses.split('@');
         if (!ref) {
+          // Deliberately NOT subject to the first-party exemption, and this is not an
+          // oversight. `uses: some/action` with no `@` at all is a different defect from
+          // a movable pointer: no version was named, so the workflow text does not say
+          // what it runs, and that is unreadable for the repository's own maintainers
+          // whoever owns the action. This already fired on `actions/*` before the owner
+          // was ever threaded in, and that behaviour is unchanged.
           add('unpinned-action', 'error', at,
             '`' + uses + '` names no version at all, so GitHub resolves it to the ' +
             'action\'s default branch and the step can change under you between two ' +
             'runs of the same commit.');
-        } else if (!FIRST_PARTY.test(name) && !isSha(ref)) {
+        } else if (!isFirstParty(name) && !isSha(ref)) {
           const mutable = !/^v?\d/.test(ref);
           add(mutable ? 'action-branch-ref' : 'unpinned-action',
             mutable ? 'error' : 'warning', at,
@@ -448,4 +488,6 @@ function analyze(text) {
   return problems;
 }
 
-module.exports = { analyze, splitLines, find, findKey, jobRanges, UNTRUSTED };
+module.exports = {
+  analyze, splitLines, find, findKey, jobRanges, UNTRUSTED, actionOwner, normOwner,
+};
