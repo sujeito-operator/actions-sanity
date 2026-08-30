@@ -1,5 +1,46 @@
 # Changelog
 
+## 0.1.4 — 2026-08-30
+
+Precision again, from the same sweep and the same principle: a linter's real cost is the
+false positive.
+
+### An action you publish yourself is no longer "third party"
+
+`unpinned-action` and `action-branch-ref` warn that a moving reference "can be changed by
+its author at any time". Both rules treated everything outside `actions/*` and `github/*`
+as third party — so an organisation that publishes its own actions and uses them in its
+own repositories got that sentence about actions it is the author of.
+
+Re-measured across the sweep pool, that was **26 findings and all 26 were wrong**:
+
+| repository | suppressed | examples |
+| --- | --- | --- |
+| `dolthub/dolt` | 23 | `dolthub/upload-release-asset@v2`, `dolthub/pull-request-comment-trigger@v2`, `dolthub/label-customer-issues@main` |
+| `commaai/opendbc` | 2 | `commaai/timeout@v1` |
+| `temporalio/temporal` | 1 | `temporalio/public-actions/golang/govulncheck@main` |
+
+The third-party findings in the same files are untouched: `dolthub/dolt` still reports 66
+and `commaai/opendbc` still reports 6.
+
+An action whose owner is the owner of the repository being linted is now first party. The
+owner is resolved once per run from `--owner`, then `GITHUB_REPOSITORY`, then the `origin`
+remote — so in CI and in the editor there is nothing to configure.
+
+This is the one setting that makes findings disappear, so it is narrow by construction
+and never silent: only `github.com` remotes named `origin` are read, a `GITHUB_REPOSITORY`
+that is not exactly `owner/repo` is ignored rather than half-parsed, the owner is matched
+as a whole path segment (`comma` does not exempt `commaai/*`), and anything unrecognised
+resolves to *no owner*, which leaves every rule reporting. The resolved owner and its
+source are printed with the findings and carried in `--json`. `--owner ""`,
+`first-party-owner: off` or `"actionsSanity.repositoryOwner": ""` turns it off.
+
+A `uses:` with no `@` at all still reports for every owner, including your own: that is a
+different defect — the workflow does not say what it runs — and it is unchanged.
+
+New: `--owner` (CLI), `first-party-owner` (Action), `actionsSanity.repositoryOwner`
+(editor). 26 new tests.
+
 ## 0.1.3 — 2026-08-30
 
 Precision. Both changes come from one measurement, and the measurement is the point:
