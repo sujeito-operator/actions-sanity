@@ -249,12 +249,117 @@ t('does NOT flag continue-on-error on a single step', () => {
   assert.ok(!has(wf, 'job-continue-on-error'), rules(wf).join());
 });
 
+// Measured 2026-08-30: 5 hits across ~570 real workflow files, 0 filable. Every one was
+// a deliberately non-blocking job nothing depended on. The half that IS visible from the
+// file -- a job others `needs:` -- keeps the warning; the rest says what it cannot know.
+console.log('continue-on-error severity follows what the file can actually see');
+const COE = (extra) => `on: push
+permissions:
+  contents: read
+jobs:
+  flaky:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    continue-on-error: true
+    steps: [{run: ./maybe.sh}]
+` + extra;
+t('a continue-on-error job nothing depends on is info, not a warning', () => {
+  const p = analyze(COE('')).find(x => x.rule === 'job-continue-on-error');
+  assert.ok(p, rules(COE('')).join());
+  assert.strictEqual(p.severity, 'info', JSON.stringify(p));
+  assert.ok(/not visible from the workflow/.test(p.message), p.message);
+});
+t('a continue-on-error job that others `needs:` stays a warning, and names them', () => {
+  const wf = COE(`  ship:
+    needs: flaky
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps: [{run: ./ship.sh}]
+`);
+  const p = analyze(wf).find(x => x.rule === 'job-continue-on-error');
+  assert.ok(p, rules(wf).join());
+  assert.strictEqual(p.severity, 'warning', JSON.stringify(p));
+  assert.ok(/`ship`/.test(p.message), p.message);
+  assert.ok(/cannot stop what comes after it/.test(p.message), p.message);
+});
+t('a needs: written as a list is followed too', () => {
+  const wf = COE(`  ship:
+    needs: [flaky]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps: [{run: ./ship.sh}]
+`);
+  const p = analyze(wf).find(x => x.rule === 'job-continue-on-error');
+  assert.strictEqual(p.severity, 'warning', JSON.stringify(p));
+});
+t('zitadel\'s release legs -- three non-blocking jobs -- report info, not three warnings', () => {
+  const wf = `on: push
+permissions:
+  contents: read
+jobs:
+  homebrew-tap:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    continue-on-error: true
+    steps: [{run: ./tap.sh}]
+  helm-chart:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    continue-on-error: true
+    steps: [{run: ./helm.sh}]
+  npm-packages:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    continue-on-error: true
+    steps: [{run: ./npm.sh}]
+`;
+  const ps = analyze(wf).filter(x => x.rule === 'job-continue-on-error');
+  assert.strictEqual(ps.length, 3, JSON.stringify(ps));
+  assert.ok(ps.every(p => p.severity === 'info'), JSON.stringify(ps));
+});
+
 console.log('cache and schedule');
 t('flags a cache key with no hashFiles', () =>
   assert.ok(has(CLEAN.replace("key: npm-${{ hashFiles('package-lock.json') }}", 'key: npm-cache'), 'cache-key-static')));
 t('accepts hashFiles in restore-keys instead of key', () => {
   const wf = CLEAN.replace("key: npm-${{ hashFiles('package-lock.json') }}",
     "key: npm-cache\n          restore-keys: npm-${{ hashFiles('package-lock.json') }}");
+  assert.ok(!has(wf, 'cache-key-static'), rules(wf).join());
+});
+
+// Measured 2026-08-30 across ~570 real workflow files: 8 cache-key-static hits, 0
+// filable, and SEVEN were this -- a key the rule read as text when it was a reference.
+console.log('cache-key-static is silent on a key it cannot resolve (7 of 8 false hits)');
+const KEYED = (key) => CLEAN.replace("key: npm-${{ hashFiles('package-lock.json') }}", 'key: ' + key);
+t("PrefectHQ/prefect: a key taken from another job's output is not readable here", () =>
+  assert.ok(!has(KEYED('${{ needs.setup.outputs.cache-key }}'), 'cache-key-static'),
+    rules(KEYED('${{ needs.setup.outputs.cache-key }}')).join()));
+t('mondoohq/cnspec: a key holding an env var a run: step wrote is not readable here', () =>
+  assert.ok(!has(KEYED('${{ runner.os }}-mql-providers-${{ env.PROVIDER_CACHE_DAY }}'),
+    'cache-key-static')));
+t('gruntwork-io/terragrunt: a key holding a tool version from env is not readable here', () =>
+  assert.ok(!has(KEYED('gon-${{ env.GON_VERSION }}'), 'cache-key-static')));
+t('LMCache/LMCache: a key varying per matrix leg is not readable here', () =>
+  assert.ok(!has(KEYED('hf-hub-${{ matrix.model.name }}-v2'), 'cache-key-static')));
+t("a key from an earlier step's output is not readable here", () =>
+  assert.ok(!has(KEYED('${{ steps.k.outputs.value }}'), 'cache-key-static')));
+t('a reusable-workflow input is not readable here', () =>
+  assert.ok(!has(KEYED('deps-${{ inputs.profile }}'), 'cache-key-static')));
+t('an opaque reference in restore-keys silences it too', () => {
+  const wf = CLEAN.replace("key: npm-${{ hashFiles('package-lock.json') }}",
+    'key: npm-cache\n          restore-keys: ${{ needs.setup.outputs.prefix }}');
+  assert.ok(!has(wf, 'cache-key-static'), rules(wf).join());
+});
+t('dolthub/dolt: a genuinely static key STILL reports -- the rule was not just muted', () => {
+  const wf = KEYED('${{ runner.os }}-docker-mysql-client-integrations\n' +
+    '          restore-keys: |\n            ${{ runner.os }}-docker');
+  assert.ok(has(wf, 'cache-key-static'), rules(wf).join());
+});
+t('a plain literal key STILL reports', () =>
+  assert.ok(has(KEYED('npm-cache'), 'cache-key-static')));
+t('github.sha still outranks the opaque check, so the per-run finding is not lost', () => {
+  const wf = KEYED('build-${{ github.sha }}-${{ env.FLAVOUR }}');
+  assert.ok(has(wf, 'cache-key-per-run'), rules(wf).join());
   assert.ok(!has(wf, 'cache-key-static'), rules(wf).join());
 });
 t('flags a schedule-only workflow with no manual trigger', () => {
