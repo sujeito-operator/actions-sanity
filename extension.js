@@ -2,6 +2,33 @@
 const vscode = require('vscode');
 const path = require('path');
 const { analyze } = require('./analyze.js');
+// cli.js imports node built-ins only and guards its own `require.main` entry point, so
+// importing it here costs nothing and keeps ONE implementation of owner detection. Two
+// copies of this would drift, and a drifted copy silently suppresses findings.
+const { ownerFromGit } = require('./cli.js');
+
+// Resolved per workspace folder and cached: lint() runs on every save and open, and this
+// walks the tree looking for .git. Cleared on configuration change, which is the only
+// way the answer moves without the folder itself changing.
+const ownerCache = new Map();
+
+function ownerFor(doc) {
+  // The setting is null by default, meaning "work it out from the clone". A string --
+  // including the empty string, which turns the exemption off -- is taken as final and
+  // nothing is detected. Null rather than "" as the default is what makes those two
+  // cases distinguishable without inspecting where the value came from.
+  const configured = vscode.workspace
+    .getConfiguration('actionsSanity', doc.uri).get('repositoryOwner', null);
+  if (typeof configured === 'string') return configured.trim() || null;
+
+  const folder = vscode.workspace.getWorkspaceFolder(doc.uri);
+  const root = folder ? folder.uri.fsPath : path.dirname(doc.uri.fsPath);
+  if (ownerCache.has(root)) return ownerCache.get(root);
+  let owner = null;
+  try { owner = ownerFromGit(root); } catch (err) { owner = null; }
+  ownerCache.set(root, owner);
+  return owner;
+}
 
 const SEV = {
   error: vscode.DiagnosticSeverity.Error,
@@ -25,7 +52,7 @@ function lint(doc, collection) {
 
   let problems;
   try {
-    problems = analyze(doc.getText());
+    problems = analyze(doc.getText(), { owner: ownerFor(doc) });
   } catch (err) {
     // A linter that throws on a file it cannot understand is worse than one that says
     // nothing about it.
@@ -86,6 +113,12 @@ function activate(context) {
     vscode.workspace.onDidSaveTextDocument(doc => lint(doc, collection)),
     vscode.workspace.onDidOpenTextDocument(doc => lint(doc, collection)),
     vscode.workspace.onDidCloseTextDocument(doc => collection.delete(doc.uri)),
+    // A changed setting or an added folder can move the owner, and a stale owner is a
+    // suppressed finding. Both drop the cache; the next lint re-detects.
+    vscode.workspace.onDidChangeConfiguration(e => {
+      if (e.affectsConfiguration('actionsSanity')) ownerCache.clear();
+    }),
+    vscode.workspace.onDidChangeWorkspaceFolders(() => ownerCache.clear()),
   );
 
   for (const doc of vscode.workspace.textDocuments) lint(doc, collection);
@@ -93,4 +126,4 @@ function activate(context) {
 
 function deactivate() {}
 
-module.exports = { activate, deactivate, isWorkflow };
+module.exports = { activate, deactivate, isWorkflow, ownerFor, ownerCache };
