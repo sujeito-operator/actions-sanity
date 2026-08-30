@@ -2,7 +2,7 @@
   "name": "actions-sanity",
   "displayName": "Actions Sanity \u2014 GitHub Actions workflow lint: script injection, unpinned actions, token scope",
   "description": "Lints .github/workflows in the editor. Finds script injection from untrusted ${{ github.event }} inputs, untrusted checkouts under pull_request_target, third-party actions on a moving tag or branch, jobs running on a write-scoped default token, needs: that point at nothing, and caches that never hit. No Go binary, no hosted service, no CI run.",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "publisher": "sujeito-operator",
   "license": "MIT",
   "sponsor": {
@@ -87,6 +87,14 @@
             "no-timeout"
           ],
           "description": "Rules never reported. `no-timeout` is off by default because it is true of almost every workflow ever written \u2014 measured against 40 real ones it fired 88 times. Remove it from this list if you care about runner minutes."
+        },
+        "actionsSanity.repositoryOwner": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null,
+          "description": "The GitHub owner of this repository. Actions it publishes are treated as first party \u2014 `unpinned-action` and `action-branch-ref` stay quiet about them \u2014 because \"its author can re-tag this under you\" is not a finding when you are the author. Leave null to read it from the origin remote. Set it to a name to override, or to the empty string to turn the exemption off and report every non-GitHub action."
         }
       }
     }
