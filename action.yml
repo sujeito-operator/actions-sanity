@@ -35,6 +35,10 @@ inputs:
     description: 'Emit JSON instead of human-readable output.'
     required: false
     default: 'false'
+  first-party-owner:
+    description: 'Whose actions are treated as first party, alongside actions/* and github/*. "auto" reads the owner from GITHUB_REPOSITORY, so an action you publish yourself is not reported as one whose author might re-tag it under you -- you are the author. Use "off" to report every non-GitHub action, or give an owner name to override. The owner actually applied is printed with the findings.'
+    required: false
+    default: 'auto'
 
 runs:
   using: 'composite'
@@ -54,9 +58,16 @@ runs:
         AS_DISABLE: ${{ inputs.disable }}
         AS_ENABLE: ${{ inputs.enable }}
         AS_JSON: ${{ inputs.json }}
+        AS_OWNER: ${{ inputs.first-party-owner }}
       run: |
         set -euo pipefail
         args=( --no-color --fail-on "$AS_FAIL_ON" --min-severity "$AS_MIN_SEVERITY" )
+        # "auto" passes nothing, leaving cli.js to read GITHUB_REPOSITORY -- which the
+        # runner always sets, so the common case needs no input at all. "off" passes an
+        # explicit empty owner, which turns the exemption off rather than re-enabling
+        # detection. Anything else is taken literally as the owner name.
+        if [ "$AS_OWNER" = "off" ]; then args+=( --owner "" )
+        elif [ -n "$AS_OWNER" ] && [ "$AS_OWNER" != "auto" ]; then args+=( --owner "$AS_OWNER" ); fi
         if [ -n "$AS_EXCLUDE" ]; then args+=( --exclude "$AS_EXCLUDE" ); fi
         if [ -n "$AS_DISABLE" ]; then args+=( --disable "$AS_DISABLE" ); fi
         if [ -n "$AS_ENABLE" ]; then args+=( --enable "$AS_ENABLE" ); fi
